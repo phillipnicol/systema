@@ -1,0 +1,116 @@
+---
+title: "Three group control analysis"
+output: html_document
+date: "2026-05-01"
+---
+
+# Steps can be repeated for Replogle
+
+```{r}
+# Loading the library and creating the subset:
+
+library(anndata)
+library(reticulate)
+library(dplyr)
+library(ggplot2)
+py_require("scanpy")
+scanpy <- import("scanpy")
+py_require("scanpy")
+scanpy <- import("scanpy")
+
+obj <- read_h5ad("data/TianKampmann2021_CRISPRi.h5ad")  
+scanpy$pp$normalize_total(obj)  # Normalize: Each cell's counts sum to 10,000, Each cell's counts sum to 10,000
+scanpy$pp$log1p(obj)  # Log transform: log(x 1) transformation, Makes data more normal/distributed
+
+# selecting highly variable genes
+scanpy$pp$highly_variable_genes(obj, n_top_genes=5000L)
+# Subset to highly variable genes
+
+ad_sub <- obj[, obj$var$highly_variable]
+X_sub <- ad_sub$X
+
+dim(X_sub)  # Check dimensions of the subsetted data
+meta_sub <- as.data.frame(ad_sub$obs)
+
+ad_sub$X[1:5, 1:5] 
+```
+# Boxplot with one control centroid
+```{r}
+# ============================================================
+# EXPERIMENT 1: VARY CONTROL SAMPLE SIZE
+# Keep perturbed cells fixed at n_pert = 50
+# ============================================================
+
+set.seed(42)
+
+# Get control matrix
+ctrl_idx <- which(ad_sub$obs$perturbation == "control")
+X_ctrl <- X_sub[ctrl_idx, ] |> as.matrix()
+n_ctrl_total <- nrow(X_ctrl)
+
+# Fixed number of perturbed cells
+n_pert <- 50
+
+# Vary control sample size
+control_sizes <- c(10, 25, 50, 100, 200)
+n_reps <- 30  # replicates per condition
+
+# Store results
+results_control_size <- data.frame()
+
+for(n_control in control_sizes) {
+  
+  # Skip if not enough control cells
+  if(n_control > n_ctrl_total) next
+  
+  for(rep in 1:n_reps) {
+    
+    # Sample control cells (for control group)
+    control_idx <- sample(n_ctrl_total, n_control)
+    ctrl_centroid <- colMeans(X_ctrl[control_idx, , drop = FALSE])
+    
+    # Sample DIFFERENT control cells (for fake perturbation 1)
+    pert1_idx <- sample(setdiff(1:n_ctrl_total, control_idx), n_pert)
+    pert1_centroid <- colMeans(X_ctrl[pert1_idx, , drop = FALSE])
+    
+    # Sample DIFFERENT control cells (for fake perturbation 2)
+    used_idx <- c(control_idx, pert1_idx)
+    pert2_idx <- sample(setdiff(1:n_ctrl_total, used_idx), n_pert)
+    pert2_centroid <- colMeans(X_ctrl[pert2_idx, , drop = FALSE])
+    
+    # Calculate shifts
+    shift1 <- pert1_centroid - ctrl_centroid
+    shift2 <- pert2_centroid - ctrl_centroid
+    
+    # Cosine similarity
+    #cos_val <- sum(shift1 * shift2) / (sqrt(sum(shift1^2)) * sqrt(sum(shift2^2)) + 1e-8)
+    cos_val <- cor(shift1, shift2)
+    
+    results_control_size <- rbind(results_control_size, 
+                                   data.frame(n_control = n_control, 
+                                              n_pert = n_pert,
+                                              replicate = rep,
+                                              cosine = cos_val))
+  }
+}
+
+# Plot results
+library(ggplot2)
+
+control_boxplot <- ggplot(results_control_size, aes(x = factor(n_control), y = cosine)) +
+  geom_boxplot(fill = "steelblue", alpha = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Effect of Control Sample Size on Correlation",
+       x = "Number of Control Cells",
+       y = "Correlation") +
+  theme_bw()
+  #theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Summary statistics
+aggregate(cosine ~ n_control, results_control_size, 
+          function(x) c(mean = mean(x), sd = sd(x)))
+
+print(control_boxplot)
+ggsave("control_boxplot.png", control_boxplot, width = 8, height = 5, dpi = 300)
+```
+
